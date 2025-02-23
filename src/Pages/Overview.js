@@ -45,7 +45,7 @@ const Overview = () => {
         setTotalCourses(courseResponse.data.totalCourses);
 
         const attendanceResponse = await axios.get(
-          "${API_BASE_URL}/api/attendance/attendance-summary",
+          `${API_BASE_URL}/api/attendance/attendance-summary`,
           {
             headers: {
               Authorization: `Bearer ${token}`,

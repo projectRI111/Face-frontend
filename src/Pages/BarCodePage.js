@@ -1,32 +1,42 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
+import * as faceapi from "face-api.js";
 
 const BarcodePage = () => {
   const [courseId, setCourseId] = useState("");
-  const [barcode, setBarcode] = useState(""); // Change from qrCode to barcode
+  const [sessionIdentifier, setSessionIdentifier] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [courses, setCourses] = useState([]);
-  console.log(courses);
-   const API_BASE_URL = process.env.REACT_APP_API_URL;
+  const [faceDetected, setFaceDetected] = useState(false);
+  const [faceData, setFaceData] = useState(null);
+  const [faceDescriptor, setFaceDescriptor] = useState(null);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [showCamera, setShowCamera] = useState(false);
+  const [retakeFace, setRetakeFace] = useState(false);
+  const [markAttendanceLoading, setMarkAttendanceLoading] = useState(false); // New loading state
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const API_BASE_URL = process.env.REACT_APP_API_URL;
 
-  // Fetch courses for the teacher (assuming the teacher is authenticated)
+  const MODEL_URL =
+    "https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights";
+
   useEffect(() => {
     const fetchCourses = async () => {
       try {
-        const token = localStorage.getItem("token"); // Retrieve the token from local storage
+        const token = localStorage.getItem("token");
         if (!token) throw new Error("No token available");
 
         const response = await axios.get(
           `${API_BASE_URL}/api/courses/teacher`,
           {
             headers: {
-              Authorization: `Bearer ${token}`, // Include the token in the Authorization header
+              Authorization: `Bearer ${token}`,
             },
           }
         );
-        console.log(response.data);
-        setCourses(response.data); // Populate courses for the teacher
+        setCourses(response.data);
       } catch (err) {
         setError(err.message || "Failed to fetch courses.");
       }
@@ -34,10 +44,127 @@ const BarcodePage = () => {
     fetchCourses();
   }, []);
 
+  useEffect(() => {
+    const loadModels = async () => {
+      try {
+        await Promise.all([
+          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+        ]);
+        setModelsLoaded(true);
+      } catch (err) {
+        console.error("Error loading face-api models:", err);
+        setError("Failed to load face recognition models");
+      }
+    };
+    loadModels();
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const setupCamera = async () => {
+      if (!modelsLoaded) return;
+
+      try {
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+        }
+
+        if (videoRef.current && (showCamera || retakeFace)) {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+          });
+          videoRef.current.srcObject = stream;
+          streamRef.current = stream;
+
+          videoRef.current.addEventListener("play", startFaceDetection);
+        }
+      } catch (err) {
+        console.error("Error accessing camera:", err);
+        setError(
+          "Failed to access camera. Please ensure camera permissions are granted."
+        );
+      }
+    };
+
+    if (showCamera || retakeFace) {
+      setupCamera();
+    }
+
+    return () => {
+      isMounted = false;
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, [showCamera, retakeFace, modelsLoaded]);
+
+  const startFaceDetection = async () => {
+    if (!videoRef.current || !modelsLoaded) return;
+
+    const detectFace = async () => {
+      if (!videoRef.current || !showCamera) return;
+
+      try {
+        const detection = await faceapi
+          .detectSingleFace(videoRef.current)
+          .withFaceLandmarks()
+          .withFaceDescriptor();
+
+        if (detection) {
+          setFaceDetected(true);
+          setTimeout(() => {
+            if (showCamera) {
+              captureFaceData(detection);
+            }
+          }, 1000);
+        } else {
+          setFaceDetected(false);
+        }
+      } catch (err) {
+        console.error("Face detection error:", err);
+      }
+
+      if (showCamera) {
+        requestAnimationFrame(detectFace);
+      }
+    };
+
+    detectFace();
+  };
+
+  const captureFaceData = async (detection) => {
+    if (!videoRef.current) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = videoRef.current.videoWidth;
+    canvas.height = videoRef.current.videoHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(videoRef.current, 0, 0);
+
+    const faceImage = canvas.toDataURL("image/jpeg", 0.8);
+    setFaceData(faceImage);
+    setFaceDescriptor(Array.from(detection.descriptor));
+    setShowCamera(false);
+
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+    }
+  };
+
+  const handleRetake = () => {
+    setRetakeFace(true);
+    setShowCamera(true);
+    setFaceData(null);
+    setFaceDescriptor(null);
+    setFaceDetected(false);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    // Validate that a course is selected
     if (!courseId) {
       setError("Please select a course.");
       return;
@@ -47,8 +174,7 @@ const BarcodePage = () => {
     setError("");
 
     try {
-      // Send POST request to the backend route for creating the attendance session
-      const token = localStorage.getItem("token"); // Retrieve the token from local storage
+      const token = localStorage.getItem("token");
       if (!token) throw new Error("No token available");
 
       const response = await axios.post(
@@ -62,9 +188,9 @@ const BarcodePage = () => {
         }
       );
 
-      // Handle success response
       if (response.status === 201) {
-        setBarcode(response.data.barcode); // Set the returned barcode image
+        setSessionIdentifier(response.data.session.sessionIdentifier);
+        setShowCamera(true);
       }
     } catch (err) {
       setError(
@@ -76,79 +202,161 @@ const BarcodePage = () => {
     }
   };
 
+  const handleMarkAttendance = async () => {
+    setMarkAttendanceLoading(true); // Start loading
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) throw new Error("No token available");
+
+      await axios.put(
+        `${API_BASE_URL}/api/attendance/mark/${sessionIdentifier}`,
+        {
+          faceData: faceDescriptor,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+      alert("Attendance Marked Successfully");
+      setFaceData(null); //reset faceData after marking
+      setShowCamera(true); //restart camera
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          "An error occurred while marking attendance."
+      );
+    } finally {
+      setMarkAttendanceLoading(false); // Stop loading
+    }
+  };
+
+  const closeError = () => {
+    setError("");
+    setShowCamera(true);
+    setFaceData(null);
+    setFaceDescriptor(null);
+    setFaceDetected(false);
+  };
+
   return (
     <div className="px-4 py-8 md:px-8">
       <div className="mx-auto max-w-7xl">
         <h1 className="mb-6 text-3xl font-semibold text-gray-800">
-          Generate Attendance Barcode
+          Attendance Page
         </h1>
 
-        {/* Error message */}
         {error && (
-          <div className="p-3 mb-6 text-white bg-red-500 rounded">
+          <div className="relative p-3 mb-6 text-white bg-red-500 rounded">
             <p>{error}</p>
+            <button
+              className="absolute text-white top-2 right-2"
+              onClick={closeError}
+            >
+              &times;
+            </button>
           </div>
         )}
 
-        {/* Barcode Generation Form */}
-        <div className="p-6 bg-white rounded-lg shadow-md">
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div>
-              <label
-                htmlFor="courseId"
-                className="block mb-2 text-lg font-semibold text-gray-700"
-              >
-                Course:
-              </label>
-              <select
-                id="courseId"
-                className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600"
-                value={courseId}
-                onChange={(e) => setCourseId(e.target.value)}
-              >
-                <option value="">Select a Course</option>
-                {courses?.map((course) => (
-                  <option key={course._id} value={course?._id}>
-                    {course?.name} ({course?.code})
-                  </option>
-                ))}
-              </select>
-            </div>
+        {!sessionIdentifier && (
+          <div className="p-6 bg-white rounded-lg shadow-md">
+            <form onSubmit={handleSubmit} className="space-y-6">
+              <div>
+                <label
+                  htmlFor="courseId"
+                  className="block mb-2 text-lg font-semibold text-gray-700"
+                >
+                  Course:
+                </label>
+                <select
+                  id="courseId"
+                  className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600"
+                  value={courseId}
+                  onChange={(e) => setCourseId(e.target.value)}
+                >
+                  <option value="">Select a Course</option>
+                  {courses?.map((course) => (
+                    <option key={course._id} value={course?._id}>
+                      {course?.name} ({course?.code})
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-            <button
-              type="submit"
-              className="w-full py-3 text-white transition duration-300 bg-purple-600 rounded-lg hover:bg-purple-700"
-              disabled={loading}
-            >
-              {loading ? "Generating..." : "Generate Barcode"}
-            </button>
-          </form>
-        </div>
+              <button
+                type="submit"
+                className="w-full py-3 text-white transition duration-300 bg-purple-600 rounded-lg hover:bg-purple-700"
+                disabled={loading}
+              >
+                {loading ? "Creating..." : "Create Attendance Session"}
+              </button>
+            </form>
+          </div>
+        )}
 
-        {/* Barcode Display Section */}
-        {barcode && (
+        {sessionIdentifier && !faceData && (
           <div className="mt-8 text-center">
             <h2 className="mb-4 text-2xl font-semibold text-gray-800">
-              Your Attendance Barcode
+              Attendance Session Started!
             </h2>
-            <div className="p-6 mx-auto bg-white rounded-lg shadow-lg">
-              <img
-                src={`data:image/png;base64,${barcode}`}
-                alt="Attendance Barcode"
-                className="mx-auto"
-              />
-            </div>
+            <p>Session Identifier: {sessionIdentifier}</p>
 
-            {/* Download Barcode Button */}
-            <div className="mt-6">
-              <a
-                href={`data:image/png;base64,${barcode}`}
-                download="attendance-barcode.png"
-                className="px-6 py-2 text-white transition duration-300 bg-green-600 rounded-lg hover:bg-green-700"
-              >
-                Download Barcode
-              </a>
-            </div>
+            {!modelsLoaded && (
+              <p className="text-sm text-gray-600">
+                Loading face recognition models...
+              </p>
+            )}
+
+            {showCamera && modelsLoaded && (
+              <div className="relative">
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  muted
+                  className="w-full bg-gray-200 rounded"
+                />
+                <div className="mt-2 text-sm text-center">
+                  {faceDetected ? (
+                    <p className="text-green-600">
+                      Face detected! Capturing...
+                    </p>
+                  ) : (
+                    <p className="text-gray-600">
+                      Position your face in the camera
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {faceData && !showCamera && (
+              <div className="space-y-2">
+                <p className="text-sm text-green-600">
+                  Face data captured successfully!
+                </p>
+                <button
+                  type="button"
+                  onClick={handleRetake}
+                  className="w-full p-2 text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300"
+                >
+                  Retake Photo
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {faceData && (
+          <div className="mt-6 text-center">
+            <button
+              onClick={handleMarkAttendance}
+              className="px-6 py-3 text-white transition duration-300 bg-green-600 rounded-lg hover:bg-green-700"
+              disabled={markAttendanceLoading}
+            >
+              {markAttendanceLoading ? "Marking..." : "Mark Attendance"}
+            </button>
           </div>
         )}
       </div>

@@ -74,7 +74,7 @@ const Dashboard = () => {
                 className="flex items-center px-6 py-3 transition duration-300 hover:bg-white hover:bg-opacity-10"
               >
                 <Icon name="qrcode" />
-                <span className="ml-4">Generate QR Code</span>
+                <span className="ml-4">Face Attendance</span>
               </Link>
             </li>
             <li>
