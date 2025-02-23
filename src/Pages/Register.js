@@ -404,7 +404,11 @@ const RegisterPage = () => {
           {/* Submit Button */}
           <button
             type="submit"
-            className="w-full p-2 text-white bg-yellow-400 rounded-md hover:bg-yellow-500"
+            className={`w-full p-2 text-white rounded-md ${
+              isLoading || (formData.role === "student" && !modelsLoaded)
+                ? "bg-gray-400 cursor-not-allowed"
+                : "bg-yellow-400 hover:bg-yellow-500"
+            }`}
             disabled={
               isLoading || (formData.role === "student" && !modelsLoaded)
             }
